@@ -589,6 +589,7 @@ struct redisServer {
     int syslog_enabled;
     char *syslog_ident;
     int syslog_facility;
+    pthread_mutex_t log_mutex;
     /* Replication related */
     int isslave;
     /* Slave specific fields */

@@ -199,7 +199,7 @@ struct redisCommand redisCommandTable[] = {
 /*============================ Utility functions ============================ */
 
 /* Low level logging. To use only for very big messages, otherwise
- * redisLog() is to prefer. */
+ * redisLog() is to prefer. Thread safe. */
 void redisLogRaw(int level, const char *msg) {
     const int syslogLevelMap[] = { LOG_DEBUG, LOG_INFO, LOG_NOTICE, LOG_WARNING };
     const char *c = ".-*#";
@@ -208,11 +208,18 @@ void redisLogRaw(int level, const char *msg) {
     char buf[64];
     int rawmode = (level & REDIS_LOG_RAW);
 
+    pthread_mutex_lock(&server.log_mutex);
     level &= 0xff; /* clear flags */
-    if (level < server.verbosity) return;
+    if (level < server.verbosity) {
+        pthread_mutex_unlock(&server.log_mutex);
+        return;
+    }
 
     fp = (server.logfile == NULL) ? stdout : fopen(server.logfile,"a");
-    if (!fp) return;
+    if (!fp) {
+        pthread_mutex_unlock(&server.log_mutex);
+        return;
+    }
 
     if (rawmode) {
         fprintf(fp,"%s",msg);
@@ -225,6 +232,8 @@ void redisLogRaw(int level, const char *msg) {
     if (server.logfile) fclose(fp);
 
     if (server.syslog_enabled) syslog(syslogLevelMap[level], "%s", msg);
+
+    pthread_mutex_unlock(&server.log_mutex);
 }
 
 /* Like redisLogRaw() but with printf-alike support. This is the funciton that
@@ -919,6 +928,12 @@ void initServerConfig() {
 
 void initServer() {
     int j;
+
+    /* Prepare logging first of all */
+    if(pthread_mutex_init(&server.log_mutex, NULL)) {
+        fprintf(stderr, "Failed to initialize mutex for logging. Exiting.");
+        exit(1);
+    }
 
     signal(SIGHUP, SIG_IGN);
     signal(SIGPIPE, SIG_IGN);
