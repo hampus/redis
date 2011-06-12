@@ -222,11 +222,11 @@ void loadServerConfig(char *filename) {
             }
         } else if (!strcasecmp(argv[0],"appendfsync") && argc == 2) {
             if (!strcasecmp(argv[1],"no")) {
-                server.appendfsync = APPENDFSYNC_NO;
+                server.aof.appendfsync = APPENDFSYNC_NO;
             } else if (!strcasecmp(argv[1],"always")) {
-                server.appendfsync = APPENDFSYNC_ALWAYS;
+                server.aof.appendfsync = APPENDFSYNC_ALWAYS;
             } else if (!strcasecmp(argv[1],"everysec")) {
-                server.appendfsync = APPENDFSYNC_EVERYSEC;
+                server.aof.appendfsync = APPENDFSYNC_EVERYSEC;
             } else {
                 err = "argument must be 'no', 'always' or 'everysec'";
                 goto loaderr;
@@ -378,11 +378,17 @@ void configSetCommand(redisClient *c) {
         server.maxidletime = ll;
     } else if (!strcasecmp(c->argv[2]->ptr,"appendfsync")) {
         if (!strcasecmp(o->ptr,"no")) {
-            server.appendfsync = APPENDFSYNC_NO;
+            aofLock();
+            server.aof.appendfsync = APPENDFSYNC_NO;
+            aofUnlock();
         } else if (!strcasecmp(o->ptr,"everysec")) {
-            server.appendfsync = APPENDFSYNC_EVERYSEC;
+            aofLock();
+            server.aof.appendfsync = APPENDFSYNC_EVERYSEC;
+            aofUnlock();
         } else if (!strcasecmp(o->ptr,"always")) {
-            server.appendfsync = APPENDFSYNC_ALWAYS;
+            aofLock();
+            server.aof.appendfsync = APPENDFSYNC_ALWAYS;
+            aofUnlock();
         } else {
             goto badfmt;
         }
@@ -572,8 +578,11 @@ void configGetCommand(redisClient *c) {
     }
     if (stringmatch(pattern,"appendfsync",0)) {
         char *policy;
+        aofLock();
+        int appendfsync = server.aof.appendfsync;
+        aofUnlock();
 
-        switch(server.appendfsync) {
+        switch(appendfsync) {
         case APPENDFSYNC_NO: policy = "no"; break;
         case APPENDFSYNC_EVERYSEC: policy = "everysec"; break;
         case APPENDFSYNC_ALWAYS: policy = "always"; break;

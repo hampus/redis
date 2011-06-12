@@ -228,6 +228,12 @@
 #define REDIS_BGSAVE_THREAD_DONE_OK 2
 #define REDIS_BGSAVE_THREAD_DONE_ERR 3
 
+/* AOF write thread states */
+#define REDIS_AOF_WRITE_THREAD_NOTSTARTED 0
+#define REDIS_AOF_WRITE_THREAD_ACTIVE 1
+#define REDIS_AOF_WRITE_THREAD_SHUTDOWN 2
+#define REDIS_AOF_WRITE_THREAD_REWRITE 3
+
 /* We can print the stacktrace, so our assert is defined this way: */
 #define redisAssert(_e) ((_e)?(void)0 : (_redisAssert(#_e,__FILE__,__LINE__),_exit(1)))
 #define redisPanic(_e) _redisPanic(#_e,__FILE__,__LINE__),_exit(1)
@@ -511,6 +517,29 @@ typedef struct {
 } clusterMsg;
 
 /*-----------------------------------------------------------------------------
+ * AOF data structures
+ *----------------------------------------------------------------------------*/
+
+/* This struct is shared between the main thread and the AOF write thread, by
+ * using aofLock(), aofUnlock() and writecond below. Make sure to lock the
+ * struct with aofLock() before accessing it. */
+typedef struct {
+    pthread_mutex_t mutex;    /* Used to serialize access to the struct */
+    pthread_cond_t writecond; /* Used to wait on write events */
+    pthread_t writethread;    /* Writes to the AOF in the background */
+    int writestate;
+    sds aofbuf;               /* AOF buffer with data to write to disk */
+    int appendfd;
+    int appendfsync;
+    time_t lastfsync;
+    int no_appendfsync; /* Disable fsyncs? Updated by the main thread. */
+    off_t appendonly_current_size;   /* AOF current size. */
+    off_t auto_aofrewrite_base_size; /* AOF size on last startup or rewrite. */
+    pid_t bgrewritechildpid; /* This is only a copy used by the write thread */
+    int bgrewrite_finished;
+} sharedAofState;
+
+/*-----------------------------------------------------------------------------
  * Global server state
  *----------------------------------------------------------------------------*/
 
@@ -555,12 +584,9 @@ struct redisServer {
     int dbnum;
     int daemonize;
     int appendonly;
-    int appendfsync;
     int no_appendfsync_on_rewrite;
     int auto_aofrewrite_perc;       /* Rewrite AOF if % growth is > M and... */
     off_t auto_aofrewrite_min_size; /* the AOF file is at least N bytes. */
-    off_t auto_aofrewrite_base_size;/* AOF size on latest startup or rewrite. */
-    off_t appendonly_current_size;  /* AOF current size. */
     int aofrewrite_scheduled;       /* Rewrite once BGSAVE terminates. */
     int shutdown_asap;
     int activerehashing;
@@ -568,8 +594,6 @@ struct redisServer {
     /* Persistence */
     long long dirty;            /* changes to DB from the last save */
     long long dirty_before_bgsave; /* used to restore dirty on failed BGSAVE */
-    time_t lastfsync;
-    int appendfd;
     int appendseldb;
     char *pidfile;
     pid_t bgsavechildpid;
@@ -578,12 +602,12 @@ struct redisServer {
     pthread_mutex_t bgsavethread_mutex;
     pthread_t bgsavethread;
     sds bgrewritebuf; /* buffer taken by parent during oppend only rewrite */
-    sds aofbuf;       /* AOF buffer, written before entering the event loop */
     struct saveparam *saveparams;
     int saveparamslen;
     char *dbfilename;
     int rdbcompression;
     char *appendfilename;
+    sharedAofState aof; /* AOF state shared between threads. Requires locking. */
     /* Logging */
     char *logfile;
     int syslog_enabled;
@@ -927,7 +951,6 @@ int rdbSaveType(FILE *fp, unsigned char type);
 int rdbSaveLen(FILE *fp, uint32_t len);
 
 /* AOF persistence */
-void flushAppendOnlyFile(void);
 void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int argc);
 void aofRemoveTempFile(pid_t childpid);
 int rewriteAppendOnlyFileBackground(void);
@@ -935,6 +958,8 @@ int loadAppendOnlyFile(char *filename);
 void stopAppendOnly(void);
 int startAppendOnly(void);
 void backgroundRewriteDoneHandler(int exitcode, int bysignal);
+void aofLock(void);
+void aofUnlock(void);
 
 /* Sorted sets data type */
 

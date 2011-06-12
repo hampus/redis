@@ -619,6 +619,27 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
         }
     }
 
+    /* Check if a rewrite has finished */
+    if (server.bgrewritechildpid != -1) {
+        aofLock();
+        if (server.aof.bgrewrite_finished) {
+            server.aof.bgrewrite_finished = 0;
+            server.bgrewritechildpid = -1;
+            /* Some junk may have accumulated in bgrewritebuf. Throw it away. */
+            sdsfree(server.bgrewritebuf);
+            server.bgrewritebuf = sdsempty();
+            /* Shutdown the write thread if needed */
+            if (server.aof.writestate != REDIS_AOF_WRITE_THREAD_NOTSTARTED &&
+                server.appendonly == 0)
+            {
+                aofUnlock();
+                stopAppendOnly();
+                aofLock();
+            }
+        }
+        aofUnlock();
+    }
+
     /* We don't want to resize the hash tables while a bacground saving
      * is in progress: the saving child is created using fork() that is
      * implemented with a copy-on-write semantic in most modern systems, so
@@ -655,7 +676,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
         int statloc;
         pid_t pid;
 
-        if ((pid = wait3(&statloc,WNOHANG,NULL)) != 0) {
+        if ((pid = wait3(&statloc,WNOHANG,NULL)) > 0) {
             int exitcode = WEXITSTATUS(statloc);
             int bysignal = 0;
             
@@ -700,15 +721,19 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
             }
          }
 
+         aofLock();
+         off_t appendonly_current_size = server.aof.appendonly_current_size;
+         int auto_aofrewrite_base_size = server.aof.auto_aofrewrite_base_size;
+         aofUnlock();
          /* Trigger an AOF rewrite if needed */
          if (server.bgsavechildpid == -1 &&
              server.bgrewritechildpid == -1 &&
              server.auto_aofrewrite_perc &&
-             server.appendonly_current_size > server.auto_aofrewrite_min_size)
+             appendonly_current_size > server.auto_aofrewrite_min_size)
          {
-            int base = server.auto_aofrewrite_base_size ?
-                            server.auto_aofrewrite_base_size : 1;
-            long long growth = (server.appendonly_current_size*100/base) - 100;
+            int base = auto_aofrewrite_base_size ?
+                            auto_aofrewrite_base_size : 1;
+            long long growth = (appendonly_current_size*100/base) - 100;
             if (growth >= server.auto_aofrewrite_perc) {
                 redisLog(REDIS_NOTICE,"Starting automatic rewriting of AOF on %lld%% growth",growth);
                 rewriteAppendOnlyFileBackground();
@@ -782,8 +807,12 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
             processInputBuffer(c);
     }
 
-    /* Write the AOF buffer on disk */
-    flushAppendOnlyFile();
+    aofLock();
+    /* Wake-up write thread, if there's something to write */
+    if (sdslen(server.aof.aofbuf)) {
+        pthread_cond_signal(&server.aof.writecond);
+    }
+    aofUnlock();
 }
 
 /* =========================== Server initialization ======================== */
@@ -859,14 +888,15 @@ void initServerConfig() {
     server.syslog_facility = LOG_LOCAL0;
     server.daemonize = 0;
     server.appendonly = 0;
-    server.appendfsync = APPENDFSYNC_EVERYSEC;
+    server.aof.appendfsync = APPENDFSYNC_EVERYSEC;
     server.no_appendfsync_on_rewrite = 0;
+    server.aof.no_appendfsync = 0;
     server.auto_aofrewrite_perc = REDIS_AUTO_AOFREWRITE_PERC;
     server.auto_aofrewrite_min_size = REDIS_AUTO_AOFREWRITE_MIN_SIZE;
-    server.auto_aofrewrite_base_size = 0;
+    server.aof.auto_aofrewrite_base_size = 0;
     server.aofrewrite_scheduled = 0;
-    server.lastfsync = time(NULL);
-    server.appendfd = -1;
+    server.aof.lastfsync = time(NULL);
+    server.aof.appendfd = -1;
     server.appendseldb = -1; /* Make sure the first time will not match */
     server.pidfile = zstrdup("/var/run/redis.pid");
     server.dbfilename = zstrdup("dump.rdb");
@@ -929,9 +959,9 @@ void initServerConfig() {
 void initServer() {
     int j;
 
-    /* Prepare logging first of all */
-    if(pthread_mutex_init(&server.log_mutex, NULL)) {
-        fprintf(stderr, "Failed to initialize mutex for logging. Exiting.");
+    /* Prepare logging */
+    if (pthread_mutex_init(&server.log_mutex, NULL)) {
+        fprintf(stderr, "Fatal: failed to initialize mutex for logging. Exiting.");
         exit(1);
     }
 
@@ -996,7 +1026,9 @@ void initServer() {
     server.bgsavethread_state = REDIS_BGSAVE_THREAD_UNACTIVE;
     server.bgsavethread = (pthread_t) -1;
     server.bgrewritebuf = sdsempty();
-    server.aofbuf = sdsempty();
+    server.aof.aofbuf = sdsempty();
+    server.aof.writestate = REDIS_AOF_WRITE_THREAD_NOTSTARTED;
+    server.aof.bgrewrite_finished = 0;
     server.lastsave = time(NULL);
     server.dirty = 0;
     server.stat_numcommands = 0;
@@ -1015,9 +1047,17 @@ void initServer() {
     if (server.sofd > 0 && aeCreateFileEvent(server.el,server.sofd,AE_READABLE,
         acceptUnixHandler,NULL) == AE_ERR) oom("creating file event");
 
+    if (pthread_mutex_init(&server.aof.mutex, NULL)) {
+        redisLog(REDIS_WARNING, "Can't initialize mutex: %s", strerror(errno));
+        exit(1);
+    }
+    if (pthread_cond_init(&server.aof.writecond, NULL)) {
+        redisLog(REDIS_WARNING, "Can't initialize condition variable: %s", strerror(errno));
+        exit(1);
+    }
     if (server.appendonly) {
-        server.appendfd = open(server.appendfilename,O_WRONLY|O_APPEND|O_CREAT,0644);
-        if (server.appendfd == -1) {
+        server.aof.appendfd = open(server.appendfilename,O_WRONLY|O_APPEND|O_CREAT,0644);
+        if (server.aof.appendfd == -1) {
             redisLog(REDIS_WARNING, "Can't open the append-only file: %s",
                 strerror(errno));
             exit(1);
@@ -1224,8 +1264,8 @@ int prepareForShutdown() {
     if (server.ds_enabled) {
         /* FIXME: flush all objects on disk */
     } else if (server.appendonly) {
-        /* Append only file: fsync() the AOF and exit */
-        aof_fsync(server.appendfd);
+        /* Append only file: stop AOF system and exit */
+        stopAppendOnly();
     } else if (server.saveparamslen > 0) {
         /* Snapshotting. Perform a SYNC SAVE and exit */
         if (rdbSave(server.dbfilename) != REDIS_OK) {
@@ -1411,12 +1451,16 @@ sds genRedisInfoString(char *section) {
             server.bgrewritechildpid != -1);
 
         if (server.appendonly) {
+            aofLock();
+            off_t appendonly_current_size = server.aof.appendonly_current_size;
+            int auto_aofrewrite_base_size = server.aof.auto_aofrewrite_base_size;
+            aofUnlock();
             info = sdscatprintf(info,
                 "aof_current_size:%lld\r\n"
                 "aof_base_size:%lld\r\n"
                 "aof_pending_rewrite:%d\r\n",
-                (long long) server.appendonly_current_size,
-                (long long) server.auto_aofrewrite_base_size,
+                (long long) appendonly_current_size,
+                (long long) auto_aofrewrite_base_size,
                 server.aofrewrite_scheduled);
         }
 
