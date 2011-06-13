@@ -895,6 +895,7 @@ void initServerConfig() {
     server.auto_aofrewrite_min_size = REDIS_AUTO_AOFREWRITE_MIN_SIZE;
     server.aof.auto_aofrewrite_base_size = 0;
     server.aofrewrite_scheduled = 0;
+    server.aof_write_buffer_max_size = 0;
     server.aof.lastfsync = time(NULL);
     server.aof.appendfd = -1;
     server.appendseldb = -1; /* Make sure the first time will not match */
@@ -1029,6 +1030,7 @@ void initServer() {
     server.aof.aofbuf = sdsempty();
     server.aof.writestate = REDIS_AOF_WRITE_THREAD_NOTSTARTED;
     server.aof.bgrewrite_finished = 0;
+    server.aof.last_write_buffer_size = 0;
     server.lastsave = time(NULL);
     server.dirty = 0;
     server.stat_numcommands = 0;
@@ -1453,14 +1455,17 @@ sds genRedisInfoString(char *section) {
         if (server.appendonly) {
             aofLock();
             off_t appendonly_current_size = server.aof.appendonly_current_size;
-            int auto_aofrewrite_base_size = server.aof.auto_aofrewrite_base_size;
+            int aofrewrite_base_size = server.aof.auto_aofrewrite_base_size;
+            long long last_writebuf_size = server.aof.last_write_buffer_size;
             aofUnlock();
             info = sdscatprintf(info,
                 "aof_current_size:%lld\r\n"
                 "aof_base_size:%lld\r\n"
+                "aof_last_write_buffer_size:%lld\r\n"
                 "aof_pending_rewrite:%d\r\n",
                 (long long) appendonly_current_size,
-                (long long) auto_aofrewrite_base_size,
+                (long long) aofrewrite_base_size,
+                last_writebuf_size,
                 server.aofrewrite_scheduled);
         }
 

@@ -243,6 +243,10 @@ void loadServerConfig(char *filename) {
                    argc == 2)
         {
             server.auto_aofrewrite_min_size = memtoll(argv[1],NULL);
+        } else if (!strcasecmp(argv[0],"aof-write-buffer-max-size") &&
+                   argc == 2)
+        {
+            server.aof_write_buffer_max_size = memtoll(argv[1],NULL);
         } else if (!strcasecmp(argv[0],"requirepass") && argc == 2) {
             server.requirepass = zstrdup(argv[1]);
         } else if (!strcasecmp(argv[0],"pidfile") && argc == 2) {
@@ -419,6 +423,9 @@ void configSetCommand(redisClient *c) {
     } else if (!strcasecmp(c->argv[2]->ptr,"auto-aof-rewrite-min-size")) {
         if (getLongLongFromObject(o,&ll) == REDIS_ERR || ll < 0) goto badfmt;
         server.auto_aofrewrite_min_size = ll;
+    } else if (!strcasecmp(c->argv[2]->ptr,"aof-write-buffer-max-size")) {
+        if (getLongLongFromObject(o,&ll) == REDIS_ERR || ll < 0) goto badfmt;
+        server.aof_write_buffer_max_size = ll;
     } else if (!strcasecmp(c->argv[2]->ptr,"save")) {
         int vlen, j;
         sds *v = sdssplitlen(o->ptr,sdslen(o->ptr)," ",1,&vlen);
@@ -616,6 +623,11 @@ void configGetCommand(redisClient *c) {
     if (stringmatch(pattern,"auto-aof-rewrite-min-size",0)) {
         addReplyBulkCString(c,"auto-aof-rewrite-min-size");
         addReplyBulkLongLong(c,server.auto_aofrewrite_min_size);
+        matches++;
+    }
+    if (stringmatch(pattern,"aof-write-buffer-max-size",0)) {
+        addReplyBulkCString(c,"aof-write-buffer-max-size");
+        addReplyBulkLongLong(c,server.aof_write_buffer_max_size);
         matches++;
     }
     if (stringmatch(pattern,"slave-serve-stale-data",0)) {

@@ -134,6 +134,8 @@ void * aofWriteThread(void *data) {
             if (sdslen(server.aof.aofbuf) > 0) {
                 flushAppendOnlyFile();
             } else {
+                /* Wake up the main thread, just to be sure */
+                pthread_cond_signal(&server.aof.writecond);
                 /* Wait until something happens */
                 pthread_cond_wait(&server.aof.writecond, &server.aof.mutex);
             }
@@ -180,11 +182,15 @@ void flushAppendOnlyFile(void) {
     sds aofbuf = server.aof.aofbuf;
     server.aof.aofbuf = sdsempty();
     server.aof.appendonly_current_size += sdslen(aofbuf);
+    server.aof.last_write_buffer_size = sdslen(aofbuf);
 
     int appendfsync = server.aof.appendfsync;
     time_t lastfsync = server.aof.lastfsync;
     int no_appendfsync = server.aof.no_appendfsync;
     aofUnlock();
+
+    /* Wake up the main thread, if it is blocking because of a full buffer */
+    pthread_cond_signal(&server.aof.writecond);
 
     /* We want to perform a single write. This should be guaranteed atomic
      * at least if the filesystem we are writing is a real physical one.
@@ -296,6 +302,20 @@ void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int a
         server.aof.no_appendfsync = 1;
     } else {
         server.aof.no_appendfsync = 0;
+    }
+
+    /* If the buffer is too large, wait until it isn't anymore */
+    size_t maxsize = server.aof_write_buffer_max_size;
+    int wasfull = 0;
+    while (maxsize && sdslen(server.aof.aofbuf) > maxsize) {
+        wasfull = 1;
+        redisLog(REDIS_NOTICE, "AOF write buffer is full (%lld bytes).",
+                 (long long)sdslen(server.aof.aofbuf));
+        pthread_cond_signal(&server.aof.writecond);
+        pthread_cond_wait(&server.aof.writecond, &server.aof.mutex);
+    }
+    if (wasfull) {
+        redisLog(REDIS_NOTICE, "AOF write buffer no longer full.");
     }
     aofUnlock();
 
@@ -801,6 +821,9 @@ void aofWriteThreadHandleRewriteDone(void) {
     server.aof.aofbuf = sdsempty();
     server.aof.writestate = REDIS_AOF_WRITE_THREAD_ACTIVE;
     aofUnlock();
+
+    /* Wake up the main thread, if it is blocking because of a full buffer */
+    pthread_cond_signal(&server.aof.writecond);
 
     /* Now it's time to flush the differences accumulated by the parent */
     snprintf(tmpfile,256,"temp-rewriteaof-bg-%d.aof", (int)bgrewritechildpid);
