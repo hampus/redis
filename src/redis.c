@@ -766,13 +766,12 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
  * for ready file descriptors. */
 void beforeSleep(struct aeEventLoop *eventLoop) {
     REDIS_NOTUSED(eventLoop);
+    listIter li;
     listNode *ln;
     redisClient *c;
 
     /* Awake clients that got all the on disk keys they requested */
     if (server.ds_enabled && listLength(server.io_ready_clients)) {
-        listIter li;
-
         listRewind(server.io_ready_clients,&li);
         while((ln = listNext(&li))) {
             c = ln->value;
@@ -808,8 +807,24 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
     }
 
     aofLock();
+    /* Awake clients that are done waiting on AOF I/O */
+    listRewind(server.aof.unblocked_clients, &li);
+    while((ln = listNext(&li))) {
+        c = ln->value;
+        /* Resume the client. */
+        listDelNode(server.aof.unblocked_clients, ln);
+        c->flags &= (~REDIS_IO_WAIT);
+        aeCreateFileEvent(server.el, c->fd, AE_READABLE,
+            readQueryFromClient, c);
+        aeCreateFileEvent(server.el, c->fd, AE_WRITABLE,
+            sendReplyToClient, c);
+        /* There may be more data to process in the input buffer. */
+        if (c->querybuf && sdslen(c->querybuf) > 0)
+            processInputBuffer(c);
+    }
+
     /* Wake-up write thread, if there's something to write */
-    if (sdslen(server.aof.aofbuf)) {
+    if (sdslen(server.aof.aofbuf) || listLength(server.aof.blocked_clients)) {
         pthread_cond_signal(&server.aof.writecond);
     }
     aofUnlock();
@@ -1030,6 +1045,8 @@ void initServer() {
     server.aof.aofbuf = sdsempty();
     server.aof.writestate = REDIS_AOF_WRITE_THREAD_NOTSTARTED;
     server.aof.bgrewrite_finished = 0;
+    server.aof.blocked_clients = listCreate();
+    server.aof.unblocked_clients = listCreate();
     server.aof.last_write_buffer_size = 0;
     server.lastsave = time(NULL);
     server.dirty = 0;
@@ -1049,23 +1066,7 @@ void initServer() {
     if (server.sofd > 0 && aeCreateFileEvent(server.el,server.sofd,AE_READABLE,
         acceptUnixHandler,NULL) == AE_ERR) oom("creating file event");
 
-    if (pthread_mutex_init(&server.aof.mutex, NULL)) {
-        redisLog(REDIS_WARNING, "Can't initialize mutex: %s", strerror(errno));
-        exit(1);
-    }
-    if (pthread_cond_init(&server.aof.writecond, NULL)) {
-        redisLog(REDIS_WARNING, "Can't initialize condition variable: %s", strerror(errno));
-        exit(1);
-    }
-    if (server.appendonly) {
-        server.aof.appendfd = open(server.appendfilename,O_WRONLY|O_APPEND|O_CREAT,0644);
-        if (server.aof.appendfd == -1) {
-            redisLog(REDIS_WARNING, "Can't open the append-only file: %s",
-                strerror(errno));
-            exit(1);
-        }
-    }
-
+    aofInit(); /* Always init AOF (doesn't start it) */
     if (server.ds_enabled) dsInit();
     if (server.cluster_enabled) clusterInit();
     srand(time(NULL)^getpid());
@@ -1123,8 +1124,12 @@ void call(redisClient *c, struct redisCommand *cmd) {
     cmd->microseconds += ustime()-start;
     cmd->calls++;
 
-    if (server.appendonly && dirty)
-        feedAppendOnlyFile(cmd,c->db->id,c->argv,c->argc);
+    if (server.appendonly) {
+        if (dirty) {
+            feedAppendOnlyFile(cmd,c->db->id,c->argv,c->argc);
+        }
+        aofClientCommand(c, dirty);
+    }
     if ((dirty || cmd->flags & REDIS_CMD_FORCE_REPLICATION) &&
         listLength(server.slaves))
         replicationFeedSlaves(server.slaves,c->db->id,c->argv,c->argc);

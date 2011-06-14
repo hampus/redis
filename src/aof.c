@@ -13,7 +13,47 @@ void aofUpdateCurrentSize(void);
 int aofStartWriteThread(void);
 void aofStopWriteThread(void);
 void * aofWriteThread(void*);
+void aofUnblockClients(list *blocked_clients);
 void aofWriteThreadHandleRewriteDone(void);
+
+void aofInit(void) {
+    if (pthread_mutex_init(&server.aof.mutex, NULL)) {
+        redisLog(REDIS_WARNING, "Can't initialize mutex: %s", strerror(errno));
+        exit(1);
+    }
+    if (pthread_cond_init(&server.aof.writecond, NULL)) {
+        redisLog(REDIS_WARNING, "Can't initialize condition variable: %s", strerror(errno));
+        exit(1);
+    }
+    if (server.appendonly) {
+        server.aof.appendfd = open(server.appendfilename,O_WRONLY|O_APPEND|O_CREAT,0644);
+        if (server.aof.appendfd == -1) {
+            redisLog(REDIS_WARNING, "Can't open the append-only file: %s",
+                strerror(errno));
+            exit(1);
+        }
+    }
+    /* Create internal AOF pipe */
+    if (pipe(server.aof.pipefd)) {
+        redisLog(REDIS_WARNING, "Can't create internal pipe: %s", strerror(errno));
+        exit(1);
+    }
+    fcntl(server.aof.pipefd[0], F_SETFL, O_NONBLOCK);
+    fcntl(server.aof.pipefd[1], F_SETFL, O_NONBLOCK);
+    if (aeCreateFileEvent(server.el, server.aof.pipefd[0], AE_READABLE,
+        aofPipeHandler, NULL) == AE_ERR) oom("creating pipe event");
+}
+
+void aofPipeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
+    REDIS_NOTUSED(el);
+    REDIS_NOTUSED(fd);
+    REDIS_NOTUSED(privdata);
+    REDIS_NOTUSED(mask);
+    /* Only read a character from the pipe. We ignore the results, as we're
+     * only interested in being notified. See beforeSleep() for more. */
+    char buf[1];
+    read(server.aof.pipefd[0], buf, 1);
+}
 
 /* Called when the user switches from "appendonly yes" to "appendonly no"
  * at runtime using the CONFIG command. */
@@ -133,6 +173,9 @@ void * aofWriteThread(void *data) {
         case REDIS_AOF_WRITE_THREAD_ACTIVE:
             if (sdslen(server.aof.aofbuf) > 0) {
                 flushAppendOnlyFile();
+            } else if (listLength(server.aof.blocked_clients)) {
+                /* Nothing to write, just unblock waiters */
+                aofUnblockClients(server.aof.blocked_clients);
             } else {
                 /* Wake up the main thread, just to be sure */
                 pthread_cond_signal(&server.aof.writecond);
@@ -170,6 +213,24 @@ void aofUnlock(void) {
     pthread_mutex_unlock(&server.aof.mutex);
 }
 
+/* Schedule clients that are blocked for unblocking. server.aof should be
+ * locked before and after the call. */
+void aofUnblockClients(list *blocked_clients) {
+    /* Move them to the unblocked list */
+    listIter *li = listGetIterator(blocked_clients, AL_START_HEAD);
+    listNode *ln;
+    redisClient *c;
+    while((ln = listNext(li))) {
+        c = ln->value;
+        listDelNode(blocked_clients, ln);
+        listAddNodeTail(server.aof.unblocked_clients, c);
+    }
+    listReleaseIterator(li);
+    /* Signal main thread */
+    char buf[] = "0"; /* Just write any character */
+    write(server.aof.pipefd[1], buf, 1);
+}
+
 /* Write the append only file buffer on disk. Expects server.aof to be locked
  * when called and will keep it locked upon return. */
 void flushAppendOnlyFile(void) {
@@ -181,6 +242,8 @@ void flushAppendOnlyFile(void) {
     int appendfd = server.aof.appendfd;
     sds aofbuf = server.aof.aofbuf;
     server.aof.aofbuf = sdsempty();
+    list *blocked_clients = server.aof.blocked_clients;
+    server.aof.blocked_clients = listCreate();
     server.aof.appendonly_current_size += sdslen(aofbuf);
     server.aof.last_write_buffer_size = sdslen(aofbuf);
 
@@ -219,11 +282,14 @@ void flushAppendOnlyFile(void) {
         /* aof_fsync is defined as fdatasync() for Linux in order to avoid
          * flushing metadata. */
         aof_fsync(appendfd); /* Let's try to get this data on the disk */
-        aofLock();
-        server.aof.lastfsync = now;
-    } else {
-        aofLock();
+        lastfsync = now;
     }
+
+    aofLock();
+    aofUnblockClients(blocked_clients);
+    listRelease(blocked_clients);
+
+    server.aof.lastfsync = lastfsync;
     /* server.aof is locked on return */
 }
 
@@ -291,7 +357,7 @@ void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int a
     }
 
     /* Append to the AOF buffer. This will be flushed on disk by the write
-     * thread. TODO: make sure replies wait for completion. */
+     * thread. aofClientCommand() handles optional client blocking. */
     aofLock();
     server.aof.aofbuf = sdscatlen(server.aof.aofbuf,buf,sdslen(buf));
 
@@ -327,6 +393,16 @@ void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int a
         server.bgrewritebuf = sdscatlen(server.bgrewritebuf,buf,sdslen(buf));
 
     sdsfree(buf);
+}
+
+/* Blocks clients if they should wait for AOF disk I/O to finish */
+void aofClientCommand(redisClient *c, long long dirty) {
+    aofLock();
+    /* Put client on hold until AOF data is written to disk */
+    c->flags |= REDIS_IO_WAIT;
+    aeDeleteFileEvent(server.el,c->fd,AE_READABLE|AE_WRITABLE);
+    listAddNodeTail(server.aof.blocked_clients, c);
+    aofUnlock();
 }
 
 /* In Redis commands are always executed in the context of a client, so in

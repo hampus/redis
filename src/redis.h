@@ -538,6 +538,9 @@ typedef struct {
     long long last_write_buffer_size;
     pid_t bgrewritechildpid; /* This is only a copy used by the write thread */
     int bgrewrite_finished;
+    list *blocked_clients;   /* Clients waiting for AOF disk I/O  */
+    list *unblocked_clients; /* Clients that are done waiting */
+    int pipefd[2]; /* Used to signal the main thread on new events */
 } sharedAofState;
 
 /*-----------------------------------------------------------------------------
@@ -953,7 +956,9 @@ int rdbSaveType(FILE *fp, unsigned char type);
 int rdbSaveLen(FILE *fp, uint32_t len);
 
 /* AOF persistence */
+void aofInit(void);
 void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int argc);
+void aofClientCommand(redisClient *c, long long dirty);
 void aofRemoveTempFile(pid_t childpid);
 int rewriteAppendOnlyFileBackground(void);
 int loadAppendOnlyFile(char *filename);
@@ -962,6 +967,7 @@ int startAppendOnly(void);
 void backgroundRewriteDoneHandler(int exitcode, int bysignal);
 void aofLock(void);
 void aofUnlock(void);
+void aofPipeHandler(aeEventLoop *el, int fd, void *privdata, int mask);
 
 /* Sorted sets data type */
 
