@@ -243,6 +243,18 @@ void loadServerConfig(char *filename) {
                    argc == 2)
         {
             server.auto_aofrewrite_min_size = memtoll(argv[1],NULL);
+        } else if (!strcasecmp(argv[0],"aof-wait-writes") &&
+                   argc == 2)
+        {
+            if ((server.aof_wait_writes = yesnotoi(argv[1])) == -1) {
+                err = "argument must be 'yes' or 'no'"; goto loaderr;
+            }
+        } else if (!strcasecmp(argv[0],"aof-wait-reads") &&
+                   argc == 2)
+        {
+            if ((server.aof_wait_reads = yesnotoi(argv[1])) == -1) {
+                err = "argument must be 'yes' or 'no'"; goto loaderr;
+            }
         } else if (!strcasecmp(argv[0],"aof-write-buffer-max-size") &&
                    argc == 2)
         {
@@ -423,6 +435,14 @@ void configSetCommand(redisClient *c) {
     } else if (!strcasecmp(c->argv[2]->ptr,"auto-aof-rewrite-min-size")) {
         if (getLongLongFromObject(o,&ll) == REDIS_ERR || ll < 0) goto badfmt;
         server.auto_aofrewrite_min_size = ll;
+    } else if (!strcasecmp(c->argv[2]->ptr,"aof-wait-writes")) {
+        int yn = yesnotoi(o->ptr);
+        if (yn == -1) goto badfmt;
+        server.aof_wait_writes = yn;
+    } else if (!strcasecmp(c->argv[2]->ptr,"aof-wait-reads")) {
+        int yn = yesnotoi(o->ptr);
+        if (yn == -1) goto badfmt;
+        server.aof_wait_reads = yn;
     } else if (!strcasecmp(c->argv[2]->ptr,"aof-write-buffer-max-size")) {
         if (getLongLongFromObject(o,&ll) == REDIS_ERR || ll < 0) goto badfmt;
         server.aof_write_buffer_max_size = ll;
@@ -623,6 +643,16 @@ void configGetCommand(redisClient *c) {
     if (stringmatch(pattern,"auto-aof-rewrite-min-size",0)) {
         addReplyBulkCString(c,"auto-aof-rewrite-min-size");
         addReplyBulkLongLong(c,server.auto_aofrewrite_min_size);
+        matches++;
+    }
+    if (stringmatch(pattern,"aof-wait-writes",0)) {
+        addReplyBulkCString(c,"aof-wait-writes");
+        addReplyBulkCString(c,server.aof_wait_writes ? "yes" : "no");
+        matches++;
+    }
+    if (stringmatch(pattern,"aof-wait-reads",0)) {
+        addReplyBulkCString(c,"aof-wait-reads");
+        addReplyBulkCString(c,server.aof_wait_reads ? "yes" : "no");
         matches++;
     }
     if (stringmatch(pattern,"aof-write-buffer-max-size",0)) {

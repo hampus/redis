@@ -589,6 +589,8 @@ struct redisServer {
     int daemonize;
     int appendonly;
     int no_appendfsync_on_rewrite;
+    int aof_wait_writes;
+    int aof_wait_reads;
     int auto_aofrewrite_perc;       /* Rewrite AOF if % growth is > M and... */
     off_t auto_aofrewrite_min_size; /* the AOF file is at least N bytes. */
     long long aof_write_buffer_max_size;

@@ -398,10 +398,14 @@ void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int a
 /* Blocks clients if they should wait for AOF disk I/O to finish */
 void aofClientCommand(redisClient *c, long long dirty) {
     aofLock();
-    /* Put client on hold until AOF data is written to disk */
-    c->flags |= REDIS_IO_WAIT;
-    aeDeleteFileEvent(server.el,c->fd,AE_READABLE|AE_WRITABLE);
-    listAddNodeTail(server.aof.blocked_clients, c);
+    /* It is configurable whether writes and reads should wait */
+    if ((dirty && server.aof_wait_writes) || (!dirty && server.aof_wait_reads))
+    {
+        /* Put client on hold until buffered AOF data is written to disk */
+        c->flags |= REDIS_IO_WAIT;
+        aeDeleteFileEvent(server.el,c->fd,AE_READABLE|AE_WRITABLE);
+        listAddNodeTail(server.aof.blocked_clients, c);
+    }
     aofUnlock();
 }
 

@@ -910,6 +910,8 @@ void initServerConfig() {
     server.auto_aofrewrite_min_size = REDIS_AUTO_AOFREWRITE_MIN_SIZE;
     server.aof.auto_aofrewrite_base_size = 0;
     server.aofrewrite_scheduled = 0;
+    server.aof_wait_writes = 1;
+    server.aof_wait_reads = 1;
     server.aof_write_buffer_max_size = 0;
     server.aof.lastfsync = time(NULL);
     server.aof.appendfd = -1;
