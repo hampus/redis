@@ -554,9 +554,35 @@ void bitopCommand(redisClient *c) {
     addReplyLongLong(c,maxlen); /* Return the output string length in bytes. */
 }
 
+long popcount(unsigned char* buf, long bytes) {
+#if __GNUC__ >= 3
+    union block {
+        unsigned char c[8];
+        unsigned long long ll;
+    } b;
+    long count = 0;
+    while(bytes >= 8) {
+        memcpy(&b.c, buf, 8);
+        buf += 8;
+        bytes -= 8;
+        count += __builtin_popcountll(b.ll);
+    }
+    if(bytes > 0) {
+        b.ll = 0;
+        memcpy(&b.c, buf, bytes);
+        count += __builtin_popcountll(b.ll);
+    }
+    return count;
+#else
+    static const unsigned char bitsinbyte[256] = {0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4,1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,4,5,5,6,5,6,6,7,5,6,6,7,6,7,7,8};
+    long count = 0;
+    while(bytes--) count += bitsinbyte[*buf++];
+    return count;
+#endif
+}
+
 /* BITCOUNT key [start end] */
 void bitcountCommand(redisClient *c) {
-    static const unsigned char bitsinbyte[256] = {0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4,1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,4,5,5,6,5,6,6,7,5,6,6,7,6,7,7,8};
     robj *o;
     long start, end;
     unsigned char *p;
@@ -608,7 +634,7 @@ void bitcountCommand(redisClient *c) {
 
         /* We can finally count bits. */
         p += start;
-        while(bytes--) bits += bitsinbyte[*p++];
+        bits = popcount(p, bytes);
         addReplyLongLong(c,bits);
     }
 }
