@@ -131,6 +131,40 @@ void aof_background_fsync(int fd) {
     bioCreateBackgroundJob(REDIS_BIO_AOF_FSYNC,(void*)(long)fd,NULL,NULL);
 }
 
+/* Create a new AOF segment and switch to it. Do nothing if AOF is disabled and
+ * disable AOF if we fail (better than e.g. crashing and losing data). */
+int aof_create_new_segment(void) {
+    if(server.aof_state == REDIS_AOF_OFF) {
+        return REDIS_ERR;
+    }
+    /* Append LOADNEXTAOF to the current segment */
+    server.aof_buf = sdscat(server.aof_buf, "*1\r\n$11\r\nLOADNEXTAOF\r\n");
+    /* Finish the current segment */
+    flushAppendOnlyFile(1);
+    aof_fsync(server.aof_fd); /* TODO: fsync and close in the background */
+    close(server.aof_fd);
+    server.aof_selected_db = -1;
+    /* Create a new segment */
+    server.aof_current_segment++;
+    server.aof_fd = aof_open_current_segment(1);
+    /* Disable AOF on error and log a warning */
+    if(server.aof_fd == -1) {
+        server.aof_fd = -1;
+        server.aof_state = REDIS_AOF_OFF;
+        redisLog(REDIS_WARNING, "Failed to create a new AOF segment! AOF disabled.");
+        return REDIS_ERR;
+    }
+    return REDIS_OK;
+}
+
+void newaofsegmentCommand(redisClient *c) {
+    if(aof_create_new_segment() == REDIS_OK) {
+        addReply(c,shared.ok);
+    } else {
+        addReply(c,shared.err);
+    }
+}
+
 /* Called when the user switches from "appendonly yes" to "appendonly no"
  * at runtime using the CONFIG command. */
 void stopAppendOnly(void) {
@@ -162,7 +196,7 @@ void stopAppendOnly(void) {
  * at runtime using the CONFIG command. */
 int startAppendOnly(void) {
     server.aof_last_fsync = server.unixtime;
-    server.aof_fd = aof_open_current_segment();
+    server.aof_fd = aof_open_current_segment(0);
     redisAssert(server.aof_state == REDIS_AOF_OFF);
     if (server.aof_fd == -1) {
         redisLog(REDIS_WARNING,"Redis needs to enable the AOF but can't open the append only file: %s",strerror(errno));
@@ -446,9 +480,17 @@ sds aof_get_current_segment_filename(void) {
     return filename;
 }
 
-int aof_open_current_segment(void) {
+/* Open the current AOF segment and return a FD. If truncate is true, then the
+ * file is truncated when opened and otherwise it's opened in append mode. */
+int aof_open_current_segment(int truncate) {
     sds filename = aof_get_current_segment_filename();
-    int fd = open(filename,O_WRONLY|O_APPEND|O_CREAT,0644);
+    int flags = O_WRONLY|O_CREAT;
+    if(truncate) {
+        flags |= O_TRUNC;
+    } else {
+        flags |= O_APPEND;
+    }
+    int fd = open(filename,flags,0644);
     sdsfree(filename);
     return fd;
 }
@@ -559,7 +601,7 @@ int loadAppendOnlyFile(void) {
     server.aof_rewrite_base_size = server.aof_current_size;
 
     /* Open the current AOF segment for writing */
-    server.aof_fd = aof_open_current_segment();
+    server.aof_fd = aof_open_current_segment(0);
     if (server.aof_fd == -1) {
         redisLog(REDIS_WARNING, "Can't open the append-only file: %s",
             strerror(errno));

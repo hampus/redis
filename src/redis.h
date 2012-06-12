@@ -984,7 +984,7 @@ int startAppendOnly(void);
 void backgroundRewriteDoneHandler(int exitcode, int bysignal);
 void aofRewriteBufferReset(void);
 unsigned long aofRewriteBufferSize(void);
-int aof_open_current_segment(void);
+int aof_open_current_segment(int truncate);
 
 /* Sorted sets data type */
 
@@ -1258,6 +1258,7 @@ void timeCommand(redisClient *c);
 void bitopCommand(redisClient *c);
 void bitcountCommand(redisClient *c);
 void loadnextaofCommand(redisClient *c);
+void newaofsegmentCommand(redisClient *c);
 
 #if defined(__GNUC__)
 void *calloc(size_t count, size_t size) __attribute__ ((deprecated));

@@ -247,7 +247,8 @@ struct redisCommand redisCommandTable[] = {
     {"time",timeCommand,1,"rR",0,NULL,0,0,0,0,0},
     {"bitop",bitopCommand,-4,"wm",0,NULL,2,-1,1,0,0},
     {"bitcount",bitcountCommand,-2,"r",0,NULL,1,1,1,0,0},
-    {"loadnextaof",loadnextaofCommand,1,"ars",0,NULL,0,0,0,0,0}
+    {"loadnextaof",loadnextaofCommand,1,"ars",0,NULL,0,0,0,0,0},
+    {"newaofsegment",newaofsegmentCommand,1,"ar",0,NULL,0,0,0,0,0}
 };
 
 /*============================ Utility functions ============================ */
@@ -1335,7 +1336,7 @@ void initServer() {
         acceptUnixHandler,NULL) == AE_ERR) oom("creating file event");
 
     if (server.aof_state == REDIS_AOF_ON) {
-        server.aof_fd = aof_open_current_segment();
+        server.aof_fd = aof_open_current_segment(0);
         if (server.aof_fd == -1) {
             redisLog(REDIS_WARNING, "Can't open the append-only file: %s",
                 strerror(errno));
