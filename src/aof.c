@@ -162,7 +162,7 @@ void stopAppendOnly(void) {
  * at runtime using the CONFIG command. */
 int startAppendOnly(void) {
     server.aof_last_fsync = server.unixtime;
-    server.aof_fd = open(server.aof_filename,O_WRONLY|O_APPEND|O_CREAT,0644);
+    server.aof_fd = aof_open_current_segment();
     redisAssert(server.aof_state == REDIS_AOF_OFF);
     if (server.aof_fd == -1) {
         redisLog(REDIS_WARNING,"Redis needs to enable the AOF but can't open the append only file: %s",strerror(errno));
@@ -433,26 +433,48 @@ void freeFakeClient(struct redisClient *c) {
     zfree(c);
 }
 
-/* Replay the append log file. On error REDIS_OK is returned. On non fatal
- * error (the append only file is zero-length) REDIS_ERR is returned. On
- * fatal error an error message is logged and the program exists. */
-int loadAppendOnlyFile(char *filename) {
-    struct redisClient *fakeClient;
-    FILE *fp = fopen(filename,"r");
-    struct redis_stat sb;
-    int old_aof_state = server.aof_state;
-    long loops = 0;
-
-    if (fp && redis_fstat(fileno(fp),&sb) != -1 && sb.st_size == 0) {
-        server.aof_current_size = 0;
-        fclose(fp);
-        return REDIS_ERR;
+sds aof_get_current_segment_filename(void) {
+    long segment = server.aof_current_segment;
+    sds filename = sdsnew(server.aof_filename);
+    /* Don't add a segment number for segment 0 */
+    if(segment > 0) {
+        sds segmentsds = sdsfromlonglong(segment);
+        filename = sdscat(filename, ".");
+        filename = sdscatsds(filename, segmentsds);
+        sdsfree(segmentsds);
     }
+    return filename;
+}
+
+int aof_open_current_segment(void) {
+    sds filename = aof_get_current_segment_filename();
+    int fd = open(filename,O_WRONLY|O_APPEND|O_CREAT,0644);
+    sdsfree(filename);
+    return fd;
+}
+
+FILE* aof_open_current_segment_for_loading(void) {
+    sds filename = aof_get_current_segment_filename();
+    redisLog(REDIS_NOTICE, "Loading %s", filename);
+
+    FILE *fp = fopen(filename, "r");
+    sdsfree(filename);
 
     if (fp == NULL) {
         redisLog(REDIS_WARNING,"Fatal error: can't open the append log file for reading: %s",strerror(errno));
         exit(1);
     }
+    return fp;
+}
+
+/* Replay the append log file. On error REDIS_OK is returned. On non fatal
+ * error (the append only file is zero-length) REDIS_ERR is returned. On
+ * fatal error an error message is logged and the program exists. */
+int loadAppendOnlyFile(void) {
+    struct redisClient *fakeClient;
+    FILE *fp = aof_open_current_segment_for_loading();
+    int old_aof_state = server.aof_state;
+    long loops = 0;
 
     /* Temporarily disable AOF, to prevent EXEC from feeding a MULTI
      * to the same file we're about to read. */
@@ -495,6 +517,8 @@ int loadAppendOnlyFile(char *filename) {
             argv[j] = createObject(REDIS_STRING,argsds);
             if (fread(buf,2,1,fp) == 0) goto fmterr; /* discard CRLF */
         }
+        fakeClient->argc = argc;
+        fakeClient->argv = argv;
 
         /* Command lookup */
         cmd = lookupCommand(argv[0]->ptr);
@@ -502,10 +526,14 @@ int loadAppendOnlyFile(char *filename) {
             redisLog(REDIS_WARNING,"Unknown command '%s' reading the append only file", argv[0]->ptr);
             exit(1);
         }
-        /* Run the command in the context of a fake client */
-        fakeClient->argc = argc;
-        fakeClient->argv = argv;
-        cmd->proc(fakeClient);
+        if (cmd->proc == loadnextaofCommand) {
+            fclose(fp);
+            server.aof_current_segment++;
+            fp = aof_open_current_segment_for_loading();
+        } else {
+            /* Run the command in the context of a fake client */
+            cmd->proc(fakeClient);
+        }
 
         /* The fake client should not have a reply */
         redisAssert(fakeClient->bufpos == 0 && listLength(fakeClient->reply) == 0);
@@ -529,6 +557,14 @@ int loadAppendOnlyFile(char *filename) {
     stopLoading();
     aofUpdateCurrentSize();
     server.aof_rewrite_base_size = server.aof_current_size;
+
+    /* Open the current AOF segment for writing */
+    server.aof_fd = aof_open_current_segment();
+    if (server.aof_fd == -1) {
+        redisLog(REDIS_WARNING, "Can't open the append-only file: %s",
+            strerror(errno));
+        exit(1);
+    }
     return REDIS_OK;
 
 readerr:
@@ -966,6 +1002,12 @@ void bgrewriteaofCommand(redisClient *c) {
     } else {
         addReply(c,shared.err);
     }
+}
+
+void loadnextaofCommand(redisClient *c) {
+    /* This is a pseudo command and should not be called by a (real) client,
+     * but it's simply treated as a no-op if called. */
+    addReply(c,shared.ok);
 }
 
 void aofRemoveTempFile(pid_t childpid) {

@@ -642,6 +642,7 @@ struct redisServer {
     time_t aof_last_fsync;            /* UNIX time of last fsync() */
     time_t aof_rewrite_time_last;   /* Time used by last AOF rewrite run. */
     time_t aof_rewrite_time_start;  /* Current AOF rewrite start time. */
+    long aof_current_segment;
     unsigned long aof_delayed_fsync;  /* delayed AOF fsync() counter */
     /* RDB persistence */
     long long dirty;                /* Changes to DB from the last save */
@@ -977,12 +978,13 @@ void flushAppendOnlyFile(int force);
 void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int argc);
 void aofRemoveTempFile(pid_t childpid);
 int rewriteAppendOnlyFileBackground(void);
-int loadAppendOnlyFile(char *filename);
+int loadAppendOnlyFile(void);
 void stopAppendOnly(void);
 int startAppendOnly(void);
 void backgroundRewriteDoneHandler(int exitcode, int bysignal);
 void aofRewriteBufferReset(void);
 unsigned long aofRewriteBufferSize(void);
+int aof_open_current_segment(void);
 
 /* Sorted sets data type */
 
@@ -1255,6 +1257,7 @@ void scriptCommand(redisClient *c);
 void timeCommand(redisClient *c);
 void bitopCommand(redisClient *c);
 void bitcountCommand(redisClient *c);
+void loadnextaofCommand(redisClient *c);
 
 #if defined(__GNUC__)
 void *calloc(size_t count, size_t size) __attribute__ ((deprecated));

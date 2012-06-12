@@ -246,7 +246,8 @@ struct redisCommand redisCommandTable[] = {
     {"script",scriptCommand,-2,"ras",0,NULL,0,0,0,0,0},
     {"time",timeCommand,1,"rR",0,NULL,0,0,0,0,0},
     {"bitop",bitopCommand,-4,"wm",0,NULL,2,-1,1,0,0},
-    {"bitcount",bitcountCommand,-2,"r",0,NULL,1,1,1,0,0}
+    {"bitcount",bitcountCommand,-2,"r",0,NULL,1,1,1,0,0},
+    {"loadnextaof",loadnextaofCommand,1,"ars",0,NULL,0,0,0,0,0}
 };
 
 /*============================ Utility functions ============================ */
@@ -1117,6 +1118,7 @@ void initServerConfig() {
     server.aof_fd = -1;
     server.aof_selected_db = -1; /* Make sure the first time will not match */
     server.aof_flush_postponed_start = 0;
+    server.aof_current_segment = 0;
     server.pidfile = zstrdup("/var/run/redis.pid");
     server.rdb_filename = zstrdup("dump.rdb");
     server.aof_filename = zstrdup("appendonly.aof");
@@ -1333,8 +1335,7 @@ void initServer() {
         acceptUnixHandler,NULL) == AE_ERR) oom("creating file event");
 
     if (server.aof_state == REDIS_AOF_ON) {
-        server.aof_fd = open(server.aof_filename,
-                               O_WRONLY|O_APPEND|O_CREAT,0644);
+        server.aof_fd = aof_open_current_segment();
         if (server.aof_fd == -1) {
             redisLog(REDIS_WARNING, "Can't open the append-only file: %s",
                 strerror(errno));
@@ -2514,7 +2515,7 @@ int main(int argc, char **argv) {
 #endif
     start = ustime();
     if (server.aof_state == REDIS_AOF_ON) {
-        if (loadAppendOnlyFile(server.aof_filename) == REDIS_OK)
+        if (loadAppendOnlyFile() == REDIS_OK)
             redisLog(REDIS_NOTICE,"DB loaded from append only file: %.3f seconds",(float)(ustime()-start)/1000000);
     } else {
         if (rdbLoad(server.rdb_filename) == REDIS_OK) {
