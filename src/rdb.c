@@ -627,6 +627,7 @@ int rdbGenericSave(char *filename, int background) {
      * background saves, this has already been done before the fork. */
     if(!background) {
         aof_create_new_segment();
+        server.aof_current_size = 0;
     }
 
     /* Write the AOF segment, if AOF is enabled */
@@ -708,7 +709,8 @@ int rdbSaveBackground(char *filename) {
     long long start;
 
     if (server.rdb_child_pid != -1) return REDIS_ERR;
-    aof_create_new_segment();
+    if(aof_create_new_segment() == REDIS_ERR) return REDIS_ERR;
+    server.aof_current_size = 0;
     server.dirty_before_bgsave = server.dirty;
 
     start = ustime();
@@ -1238,8 +1240,6 @@ void saveCommand(redisClient *c) {
 void bgsaveCommand(redisClient *c) {
     if (server.rdb_child_pid != -1) {
         addReplyError(c,"Background save already in progress");
-    } else if (server.aof_child_pid != -1) {
-        addReplyError(c,"Can't BGSAVE while AOF log rewriting is in progress");
     } else if (rdbSaveBackground(server.rdb_filename) == REDIS_OK) {
         addReplyStatus(c,"Background saving started");
     } else {

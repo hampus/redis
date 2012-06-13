@@ -18,7 +18,7 @@ robj *lookupKey(redisDb *db, robj *key) {
         /* Update the access time for the aging algorithm.
          * Don't do it if we have a saving child, as this will trigger
          * a copy on write madness. */
-        if (server.rdb_child_pid == -1 && server.aof_child_pid == -1)
+        if (server.rdb_child_pid == -1)
             val->lru = server.lruclock;
         return val;
     } else {

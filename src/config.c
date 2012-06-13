@@ -254,11 +254,7 @@ void loadServerConfigFromString(char *config) {
         } else if (!strcasecmp(argv[0],"auto-aof-rewrite-percentage") &&
                    argc == 2)
         {
-            server.aof_rewrite_perc = atoi(argv[1]);
-            if (server.aof_rewrite_perc < 0) {
-                err = "Invalid negative percentage for AOF auto rewrite";
-                goto loaderr;
-            }
+            /* Deprecated */
         } else if (!strcasecmp(argv[0],"auto-aof-rewrite-min-size") &&
                    argc == 2)
         {
@@ -481,8 +477,7 @@ void configSetCommand(redisClient *c) {
             }
         }
     } else if (!strcasecmp(c->argv[2]->ptr,"auto-aof-rewrite-percentage")) {
-        if (getLongLongFromObject(o,&ll) == REDIS_ERR || ll < 0) goto badfmt;
-        server.aof_rewrite_perc = ll;
+        /* Deprecated */
     } else if (!strcasecmp(c->argv[2]->ptr,"auto-aof-rewrite-min-size")) {
         if (getLongLongFromObject(o,&ll) == REDIS_ERR || ll < 0) goto badfmt;
         server.aof_rewrite_min_size = ll;
@@ -710,8 +705,6 @@ void configGetCommand(redisClient *c) {
     config_get_numerical_field("maxmemory",server.maxmemory);
     config_get_numerical_field("maxmemory-samples",server.maxmemory_samples);
     config_get_numerical_field("timeout",server.maxidletime);
-    config_get_numerical_field("auto-aof-rewrite-percentage",
-            server.aof_rewrite_perc);
     config_get_numerical_field("auto-aof-rewrite-min-size",
             server.aof_rewrite_min_size);
     config_get_numerical_field("hash-max-ziplist-entries",
