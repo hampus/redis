@@ -11,6 +11,7 @@
 #include <sys/wait.h>
 
 sds aof_get_current_segment_filename(void);
+sds aof_get_segment_filename(long segment);
 
 /* ----------------------------------------------------------------------------
  * AOF file implementation
@@ -20,6 +21,18 @@ sds aof_get_current_segment_filename(void);
  * file descriptor (the one of the AOF file) in another thread. */
 void aof_background_fsync(int fd) {
     bioCreateBackgroundJob(REDIS_BIO_AOF_FSYNC,(void*)(long)fd,NULL,NULL);
+}
+
+
+void aof_garbage_collect_segments(long keep_from_segment) {
+    if(keep_from_segment < server.aof_first_segment) return;
+    for(int i = server.aof_first_segment; i < keep_from_segment; i++) {
+        sds filename = aof_get_segment_filename(i);
+        redisLog(REDIS_NOTICE, "Deleting AOF segment %s", filename);
+        unlink(filename);
+        sdsfree(filename);
+    }
+    server.aof_first_segment = keep_from_segment;
 }
 
 /* Create a new AOF segment and switch to it. Do nothing if AOF is disabled and
@@ -48,7 +61,7 @@ int aof_create_new_segment(void) {
         return REDIS_ERR;
     }
     sds filename = aof_get_current_segment_filename();
-    redisLog(REDIS_VERBOSE, "Created a new AOF segment: %s", filename);
+    redisLog(REDIS_NOTICE, "Created a new AOF segment: %s", filename);
     sdsfree(filename);
     return REDIS_OK;
 }
@@ -354,8 +367,7 @@ void freeFakeClient(struct redisClient *c) {
     zfree(c);
 }
 
-sds aof_get_current_segment_filename(void) {
-    long segment = server.aof_current_segment;
+sds aof_get_segment_filename(long segment) {
     sds filename = sdsnew(server.aof_filename);
     /* Don't add a segment number for segment 0 */
     if(segment > 0) {
@@ -367,9 +379,14 @@ sds aof_get_current_segment_filename(void) {
     return filename;
 }
 
+sds aof_get_current_segment_filename(void) {
+    return aof_get_segment_filename(server.aof_current_segment);
+}
+
 /* Update the server.aof_current_size field explicitly using stat(2)
  * to check the size of the file. */
 void aofAddFileSize(FILE *fp) {
+    if(fp == NULL) return;
     struct redis_stat sb;
     if (redis_fstat(fileno(fp),&sb) == -1) {
         redisLog(REDIS_WARNING,"Unable to obtain the AOF file length. stat: %s",
@@ -379,14 +396,14 @@ void aofAddFileSize(FILE *fp) {
     }
 }
 
-FILE* aof_open_current_segment_for_loading(void) {
+FILE* aof_open_current_segment_for_loading(int must_exist) {
     sds filename = aof_get_current_segment_filename();
     redisLog(REDIS_NOTICE, "Loading %s", filename);
 
     FILE *fp = fopen(filename, "r");
     sdsfree(filename);
 
-    if (fp == NULL) {
+    if (fp == NULL && must_exist) {
         redisLog(REDIS_WARNING,"Fatal error: can't open the append log file for reading: %s",strerror(errno));
         exit(1);
     }
@@ -402,7 +419,12 @@ int loadAppendOnlyFile(void) {
     int old_aof_state = server.aof_state;
     long loops = 0;
     server.aof_current_size = 0;
-    FILE *fp = aof_open_current_segment_for_loading();
+    server.aof_first_segment = server.aof_current_segment;
+    FILE *fp = aof_open_current_segment_for_loading(0);
+
+    if(fp == NULL) {
+        return REDIS_ERR;
+    }
 
     /* Temporarily disable AOF, to prevent EXEC from feeding a MULTI
      * to the same file we're about to read. */
@@ -456,7 +478,7 @@ int loadAppendOnlyFile(void) {
         if (cmd->proc == loadnextaofCommand) {
             fclose(fp);
             server.aof_current_segment++;
-            fp = aof_open_current_segment_for_loading();
+            fp = aof_open_current_segment_for_loading(1);
         } else {
             /* Run the command in the context of a fake client */
             cmd->proc(fakeClient);

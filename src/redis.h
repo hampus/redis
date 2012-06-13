@@ -635,6 +635,8 @@ struct redisServer {
     time_t aof_flush_postponed_start; /* UNIX time of postponed AOF flush */
     time_t aof_last_fsync;            /* UNIX time of last fsync() */
     long aof_current_segment;
+    long aof_first_segment;
+    long aof_rdb_segment;
     unsigned long aof_delayed_fsync;  /* delayed AOF fsync() counter */
     /* RDB persistence */
     long long dirty;                /* Changes to DB from the last save */
@@ -978,6 +980,7 @@ void aofRewriteBufferReset(void);
 unsigned long aofRewriteBufferSize(void);
 int aof_open_current_segment(int truncate);
 int aof_create_new_segment(void);
+void aof_garbage_collect_segments(long keep_from_segment);
 
 /* Sorted sets data type */
 

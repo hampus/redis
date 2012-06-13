@@ -627,6 +627,7 @@ int rdbGenericSave(char *filename, int background) {
      * background saves, this has already been done before the fork. */
     if(!background) {
         aof_create_new_segment();
+        server.aof_rdb_segment = server.aof_current_segment;
         server.aof_current_size = 0;
     }
 
@@ -689,6 +690,9 @@ int rdbGenericSave(char *filename, int background) {
     server.dirty = 0;
     server.lastsave = time(NULL);
     server.lastbgsave_status = REDIS_OK;
+    if(!background) {
+        aof_garbage_collect_segments(server.aof_rdb_segment);
+    }
     return REDIS_OK;
 
 werr:
@@ -710,6 +714,7 @@ int rdbSaveBackground(char *filename) {
 
     if (server.rdb_child_pid != -1) return REDIS_ERR;
     if(aof_create_new_segment() == REDIS_ERR) return REDIS_ERR;
+    server.aof_rdb_segment = server.aof_current_segment;
     server.aof_current_size = 0;
     server.dirty_before_bgsave = server.dirty;
 
@@ -1220,6 +1225,7 @@ void backgroundSaveDoneHandler(int exitcode, int bysignal) {
     server.rdb_child_pid = -1;
     server.rdb_save_time_last = time(NULL)-server.rdb_save_time_start;
     server.rdb_save_time_start = -1;
+    aof_garbage_collect_segments(server.aof_rdb_segment);
     /* Possibly there are slaves waiting for a BGSAVE in order to be served
      * (the first stage of SYNC is a bulk transfer of dump.rdb) */
     updateSlavesWaitingBgsave(exitcode == 0 ? REDIS_OK : REDIS_ERR);

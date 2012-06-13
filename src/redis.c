@@ -1090,6 +1090,8 @@ void initServerConfig() {
     server.aof_selected_db = -1; /* Make sure the first time will not match */
     server.aof_flush_postponed_start = 0;
     server.aof_current_segment = 0;
+    server.aof_first_segment = 0;
+    server.aof_rdb_segment = -1;
     server.pidfile = zstrdup("/var/run/redis.pid");
     server.rdb_filename = zstrdup("dump.rdb");
     server.aof_filename = zstrdup("appendonly.aof");
@@ -1302,15 +1304,6 @@ void initServer() {
         acceptTcpHandler,NULL) == AE_ERR) oom("creating file event");
     if (server.sofd > 0 && aeCreateFileEvent(server.el,server.sofd,AE_READABLE,
         acceptUnixHandler,NULL) == AE_ERR) oom("creating file event");
-
-    if (server.aof_state == REDIS_AOF_ON) {
-        server.aof_fd = aof_open_current_segment(0);
-        if (server.aof_fd == -1) {
-            redisLog(REDIS_WARNING, "Can't open the append-only file: %s",
-                strerror(errno));
-            exit(1);
-        }
-    }
 
     /* 32 bit instances are limited to 4GB of address space, so if there is
      * no explicit limit in the user provided configuration we set a limit
@@ -2463,8 +2456,17 @@ int main(int argc, char **argv) {
     int rdbversion = rdbGetVersion(server.rdb_filename);
     redisLog(REDIS_DEBUG, "Found RDB with version %d", rdbversion);
     if (server.aof_state == REDIS_AOF_ON && rdbversion <= 6) {
-        if (loadAppendOnlyFile() == REDIS_OK)
+        if (loadAppendOnlyFile() == REDIS_OK) {
             redisLog(REDIS_NOTICE,"DB loaded from append only file: %.3f seconds",(float)(ustime()-start)/1000000);
+        } else {
+            /* Failed to load AOF. Create an empty one. */
+            server.aof_fd = aof_open_current_segment(0);
+            if (server.aof_fd == -1) {
+                redisLog(REDIS_WARNING, "Can't open the append-only file: %s",
+                    strerror(errno));
+                exit(1);
+            }
+        }
     } else {
         if (rdbLoad(server.rdb_filename) == REDIS_OK) {
             if(server.aof_current_segment > 0) {
