@@ -597,8 +597,8 @@ int rdbSaveKeyValuePair(rio *rdb, robj *key, robj *val,
     return 1;
 }
 
-/* Save the DB on disk. Return REDIS_ERR on error, REDIS_OK on success */
-int rdbSave(char *filename) {
+/* Used both for synchronous and background saves */
+int rdbGenericSave(char *filename, int background) {
     dictIterator *di = NULL;
     dictEntry *de;
     char tmpfile[256];
@@ -622,6 +622,18 @@ int rdbSave(char *filename) {
         rdb.update_cksum = rioGenericUpdateChecksum;
     snprintf(magic,sizeof(magic),"REDIS%04d",REDIS_RDB_VERSION);
     if (rdbWriteRaw(&rdb,magic,9) == -1) goto werr;
+
+    /* Create a new AOF segment, unless this is a background save. For
+     * background saves, this has already been done before the fork. */
+    if(!background) {
+        aof_create_new_segment();
+    }
+
+    /* Write the AOF segment, if AOF is enabled */
+    if(server.aof_state == REDIS_AOF_ON) {
+        if (rdbSaveType(&rdb,REDIS_RDB_OPCODE_AOFSEGMENT) == -1) goto werr;
+        if (rdbSaveLen(&rdb,server.aof_current_segment) == -1) goto werr;
+    }
 
     for (j = 0; j < server.dbnum; j++) {
         redisDb *db = server.db+j;
@@ -686,12 +698,17 @@ werr:
     return REDIS_ERR;
 }
 
+/* Save the DB on disk. Return REDIS_ERR on error, REDIS_OK on success */
+int rdbSave(char *filename) {
+    return rdbGenericSave(filename, 0);
+}
+
 int rdbSaveBackground(char *filename) {
     pid_t childpid;
     long long start;
 
     if (server.rdb_child_pid != -1) return REDIS_ERR;
-
+    aof_create_new_segment();
     server.dirty_before_bgsave = server.dirty;
 
     start = ustime();
@@ -701,7 +718,7 @@ int rdbSaveBackground(char *filename) {
         /* Child */
         if (server.ipfd > 0) close(server.ipfd);
         if (server.sofd > 0) close(server.sofd);
-        retval = rdbSave(filename);
+        retval = rdbGenericSave(filename, 1);
         exitFromChild((retval == REDIS_OK) ? 0 : 1);
     } else {
         /* Parent */
@@ -1093,6 +1110,18 @@ int rdbLoad(char *filename) {
             db = server.db+dbid;
             continue;
         }
+        /* Handle AOFSEGMENT opcode as a special case */
+        if (type == REDIS_RDB_OPCODE_AOFSEGMENT) {
+            long segment;
+            if ((segment = rdbLoadLen(&rdb,NULL)) == REDIS_RDB_LENERR)
+                goto eoferr;
+            if (segment <= 0) {
+                redisLog(REDIS_WARNING,"FATAL: Invalid AOF segment number found in the RDB. Exiting\n");
+                exit(1);
+            }
+            server.aof_current_segment = segment;
+            continue;
+        }
         /* Read key */
         if ((key = rdbLoadStringObject(&rdb)) == NULL) goto eoferr;
         /* Read value */
@@ -1137,6 +1166,36 @@ eoferr: /* unexpected end of file is handled here with a fatal exit */
     redisLog(REDIS_WARNING,"Short read or OOM loading DB. Unrecoverable error, aborting now.");
     exit(1);
     return REDIS_ERR; /* Just to avoid warning */
+}
+
+/* Returns the version for readable RDB files and otherwise -1. */
+int rdbGetVersion(char *filename) {
+    int rdbver;
+    char buf[1024];
+    FILE *fp;
+    rio rdb;
+
+    fp = fopen(filename,"r");
+    if (!fp) {
+        return -1;
+    }
+    rioInitWithFile(&rdb,fp);
+    if (rioRead(&rdb,buf,9) == 0) {
+        fclose(fp);
+        return -1;
+    }
+    buf[9] = '\0';
+    if (memcmp(buf,"REDIS",5) != 0) {
+        fclose(fp);
+        return -1;
+    }
+    rdbver = atoi(buf+5);
+    if (rdbver < 1 || rdbver > REDIS_RDB_VERSION) {
+        fclose(fp);
+        return -1;
+    }
+    fclose(fp);
+    return rdbver;
 }
 
 /* A background saving child (BGSAVE) terminated its work. Handle this. */

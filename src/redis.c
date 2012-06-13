@@ -2515,11 +2515,16 @@ int main(int argc, char **argv) {
     linuxOvercommitMemoryWarning();
 #endif
     start = ustime();
-    if (server.aof_state == REDIS_AOF_ON) {
+    int rdbversion = rdbGetVersion(server.rdb_filename);
+    redisLog(REDIS_DEBUG, "Found RDB with version %d", rdbversion);
+    if (server.aof_state == REDIS_AOF_ON && rdbversion <= 6) {
         if (loadAppendOnlyFile() == REDIS_OK)
             redisLog(REDIS_NOTICE,"DB loaded from append only file: %.3f seconds",(float)(ustime()-start)/1000000);
     } else {
         if (rdbLoad(server.rdb_filename) == REDIS_OK) {
+            if(server.aof_current_segment > 0) {
+                loadAppendOnlyFile();
+            }
             redisLog(REDIS_NOTICE,"DB loaded from disk: %.3f seconds",
                 (float)(ustime()-start)/1000000);
         } else if (errno != ENOENT) {

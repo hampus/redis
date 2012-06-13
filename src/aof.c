@@ -11,6 +11,7 @@
 #include <sys/wait.h>
 
 void aofUpdateCurrentSize(void);
+sds aof_get_current_segment_filename(void);
 
 /* ----------------------------------------------------------------------------
  * AOF rewrite buffer implementation.
@@ -154,6 +155,9 @@ int aof_create_new_segment(void) {
         redisLog(REDIS_WARNING, "Failed to create a new AOF segment! AOF disabled.");
         return REDIS_ERR;
     }
+    sds filename = aof_get_current_segment_filename();
+    redisLog(REDIS_VERBOSE, "Created a new AOF segment: %s", filename);
+    sdsfree(filename);
     return REDIS_OK;
 }
 

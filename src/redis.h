@@ -985,6 +985,7 @@ void backgroundRewriteDoneHandler(int exitcode, int bysignal);
 void aofRewriteBufferReset(void);
 unsigned long aofRewriteBufferSize(void);
 int aof_open_current_segment(int truncate);
+int aof_create_new_segment(void);
 
 /* Sorted sets data type */
 

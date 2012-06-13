@@ -9,7 +9,7 @@
 
 /* The current RDB version. When the format changes in a way that is no longer
  * backward compatible this number gets incremented. */
-#define REDIS_RDB_VERSION 6
+#define REDIS_RDB_VERSION 7
 
 /* Defines related to the dump file format. To store 32 bits lengths for short
  * keys requires a lot of space, so we check the most significant 2 bits of
@@ -57,6 +57,7 @@
 #define rdbIsObjectType(t) ((t >= 0 && t <= 4) || (t >= 9 && t <= 13))
 
 /* Special RDB opcodes (saved/loaded with rdbSaveType/rdbLoadType). */
+#define REDIS_RDB_OPCODE_AOFSEGMENT 251
 #define REDIS_RDB_OPCODE_EXPIRETIME_MS 252
 #define REDIS_RDB_OPCODE_EXPIRETIME 253
 #define REDIS_RDB_OPCODE_SELECTDB   254
@@ -74,6 +75,7 @@ uint32_t rdbLoadLen(rio *rdb, int *isencoded);
 int rdbSaveObjectType(rio *rdb, robj *o);
 int rdbLoadObjectType(rio *rdb);
 int rdbLoad(char *filename);
+int rdbGetVersion(char *filename);
 int rdbSaveBackground(char *filename);
 void rdbRemoveTempFile(pid_t childpid);
 int rdbSave(char *filename);
