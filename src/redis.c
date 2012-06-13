@@ -2470,7 +2470,16 @@ int main(int argc, char **argv) {
     } else {
         if (rdbLoad(server.rdb_filename) == REDIS_OK) {
             if(server.aof_current_segment > 0) {
-                loadAppendOnlyFile();
+                if(loadAppendOnlyFile() == REDIS_ERR) {
+                    redisLog(REDIS_WARNING, "WARNING: Failed to load the AOF that the RDB specifies. Ignoring AOF and creating a new one.");
+                    /* Failed to load AOF. Create an empty one. */
+                    server.aof_fd = aof_open_current_segment(0);
+                    if (server.aof_fd == -1) {
+                        redisLog(REDIS_WARNING, "Can't open the append-only file: %s",
+                            strerror(errno));
+                        exit(1);
+                    }
+                }
             }
             redisLog(REDIS_NOTICE,"DB loaded from disk: %.3f seconds",
                 (float)(ustime()-start)/1000000);
